@@ -1,61 +1,67 @@
 import Redis from "ioredis";
 import { Server } from "socket.io";
+import prismaClient from "./prisma";
+import { produceMessage } from "./kafka";
 
 const pub=new Redis({
-    host:'redis-1b7efc0c-abdulrehmanjaveds12-1130.a.aivencloud.com',
-    port:13313,
-    password:'AVNS_sXKsPqhW3Xt7128XB79',
-    username:'default'
+    host:process.env.REDIS_HOST,
+    port:process.env.REDIS_PORT as unknown as number,
+    password:process.env.REDIS_PASSWORD,
+    username:process.env.REDIS_USERNAME
 });
 const sub=new Redis({
-    host:'redis-1b7efc0c-abdulrehmanjaveds12-1130.a.aivencloud.com',
-    port:13313,
-    password:'AVNS_sXKsPqhW3Xt7128XB79',
-    username:'default'
+  host:process.env.REDIS_HOST,
+  port:process.env.REDIS_PORT as unknown as number,
+  password:process.env.REDIS_PASSWORD,
+  username:process.env.REDIS_USERNAME
 });
 
-class SocketService{
-    private _io:Server;
-    constructor(){ 
-        console.log("Init SocketService");
-        this._io=new Server({
-            cors:{
-                allowedHeaders:['*'],
-                origin:'*'
-            }
+class SocketService {
+    private _io: Server;
+  
+    constructor() {
+      console.log("Init Socket Service...");
+      this._io = new Server({
+        cors: {
+          allowedHeaders: ["*"],
+          origin: "*",
+        },
+      });
+      sub.subscribe("MESSAGES");
+    }
+  
+    public initListeners() {
+      const io = this.io;
+      console.log("Init Socket Listeners...");
+  
+      io.on("connect", (socket) => {
+        console.log(`New Socket Connected`, socket.id);
+        socket.on("event:message", async ({ message }: { message: string }) => {
+          console.log("New Message Rec.", message);
+          // publish this message to redis
+          await pub.publish("MESSAGES", JSON.stringify({ message }));
         });
-        sub.subscribe("MESSAGE");
+      });
+  
+      sub.on("message",async (channel, message) => {
+        if (channel === "MESSAGES") {
+          console.log("new message from redis", message);
+          io.emit("message", message);
+          //store this message in db(wrong approach)
+          // await prismaClient.message.create({
+          //   data: {
+          //     text: message.value,
+          //   },
+          // })
+          await produceMessage(message);
+          console.log("Message produced to kafka broker"); //what is broker?ans:
+        }
+      });
     }
-    get io(){
-        return this._io;
+  
+    get io() {
+      return this._io;
     }
-    public initListeners(){
-        const io=this._io;
-        console.log("Init Listeners");
-        io.on('connect', (socket) => {
-            console.log('new socket connected',socket.id);
-            socket.on("event:message",async ({message}:{message:string})=>{
-                console.log("new message received",message);
-                //publish this message to redis
-                try {
-                    const numRecipients = await pub.publish("MESSAGE", message);
-                    if (numRecipients > 0) {
-                        console.log('Message was successfully published');
-                    } else {
-                        console.log('No clients received the message');
-                    }
-                } catch (error) {
-                    console.error('An error occurred while publishing the message:', error);
-                }               
-            });
-            sub.on('message',(channel,message)=>{
-                if(channel==="MESSAGE"){
-                    console.log("Receiving events from redis directly",message);
-                    io.emit("message",message);    
-                }
-            })
-    })
- 
-    }
-}
-export default SocketService;
+  }
+  
+  export default SocketService;
